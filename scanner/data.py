@@ -15,7 +15,12 @@ WIKI = {
     "sp500": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
     "ndx": "https://en.wikipedia.org/wiki/Nasdaq-100",
 }
-UA = {"User-Agent": "hbb-scanner/1.0 (research script)"}
+# Daily-updated constituent lists published on GitHub (github.com/yfiua/index-constituents)
+GH_LISTS = {
+    "sp500": "https://raw.githubusercontent.com/yfiua/index-constituents/main/docs/constituents-sp500.csv",
+    "ndx": "https://raw.githubusercontent.com/yfiua/index-constituents/main/docs/constituents-nasdaq100.csv",
+}
+UA = {"User-Agent": "hbb-scanner/1.0 (+https://github.com/ryanlonghenry/hbb-scanner)"}
 
 
 def _yahoo_symbol(sym: str) -> str:
@@ -28,8 +33,35 @@ def _read_wiki_tables(url: str) -> list[pd.DataFrame]:
     return pd.read_html(io.StringIO(html))
 
 
+def _from_github() -> pd.DataFrame:
+    import requests
+    frames = []
+    for url in GH_LISTS.values():
+        r = requests.get(url, headers=UA, timeout=30)
+        r.raise_for_status()
+        frames.append(pd.read_csv(io.StringIO(r.content.decode("utf-8"))))
+    u = pd.concat(frames).rename(columns={"Symbol": "ticker", "Name": "name"})
+    u["ticker"] = u.ticker.map(_yahoo_symbol)
+    return u.drop_duplicates("ticker")[["ticker", "name"]]
+
+
 def refresh_universe() -> pd.DataFrame:
-    """Pull current constituents; fall back to the cached list if Wikipedia is unreachable."""
+    """Current S&P 500 + Nasdaq-100 members.
+    Order: GitHub daily lists -> Wikipedia -> the list saved in data/universe.csv."""
+    cached = pd.read_csv(UNIVERSE_CACHE) if UNIVERSE_CACHE.exists() else None
+    etfs = pd.DataFrame(ETFS, columns=["ticker", "name", "sector"])
+    try:
+        u = _from_github()
+        if len(u) > 400:
+            if cached is not None:   # keep sectors from the saved list
+                u = u.merge(cached[["ticker", "sector"]], on="ticker", how="left")
+            u = pd.concat([etfs, u]).drop_duplicates("ticker").fillna({"sector": ""})
+            UNIVERSE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            u.to_csv(UNIVERSE_CACHE, index=False)
+            print(f"[universe] {len(u)} tickers from GitHub lists")
+            return u.reset_index(drop=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[universe] GitHub lists failed ({e}); trying Wikipedia")
     rows = []
     try:
         sp = _read_wiki_tables(WIKI["sp500"])[0]
@@ -47,12 +79,15 @@ def refresh_universe() -> pd.DataFrame:
         if len(u) > 400:
             UNIVERSE_CACHE.parent.mkdir(parents=True, exist_ok=True)
             u.to_csv(UNIVERSE_CACHE, index=False)
+            print(f"[universe] {len(u)} tickers from Wikipedia")
             return u.reset_index(drop=True)
     except Exception as e:  # noqa: BLE001
-        print(f"[universe] Wikipedia refresh failed ({e}); using cached list")
-    if UNIVERSE_CACHE.exists():
-        return pd.read_csv(UNIVERSE_CACHE)
-    return pd.DataFrame(ETFS, columns=["ticker", "name", "sector"])
+        print(f"[universe] Wikipedia failed ({e}); using the saved list")
+    if cached is not None and len(cached) > 400:
+        print(f"[universe] {len(cached)} tickers from data/universe.csv")
+        return cached
+    print("[universe] WARNING: no member list available, scanning index ETFs only")
+    return etfs
 
 
 def download_prices(tickers: list[str], period: str = "2y", chunk: int = 100, retries: int = 3) -> dict[str, pd.DataFrame]:
