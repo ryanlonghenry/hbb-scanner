@@ -1,0 +1,2 @@
+ticker,contract,kind,strike,expiry,qty,entry_date,entry_price,entry_underlying,status,exit_date,exit_price,notes
+ORLY,ORLY261218P00085000,put,85,2026-12-18,1,2026-11-10,1.10,89.94,open,,,first live test - red flip read intraday 11/10

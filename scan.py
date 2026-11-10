@@ -11,7 +11,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from datetime import datetime, timezone
+from datetime import datetime, time as dtime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +49,22 @@ def iv_rank(hist: pd.DataFrame, ticker: str, kind: str, iv: float, min_obs: int 
     return float((h < iv).mean() * 100)
 
 
+def is_final(scan_date: str) -> bool:
+    """True once the US market has closed for the scan's bar (16:05 New York time or a later day)."""
+    ny = datetime.now(ZoneInfo("America/New_York"))
+    return ny.date().isoformat() > scan_date or ny.time() >= dtime(16, 5)
+
+
+def tracked_tickers() -> list[str]:
+    from scanner import tracker
+    ts = []
+    for path, cols in ((tracker.POSITIONS, tracker.POS_COLS), (tracker.PAPER, tracker.PAPER_COLS)):
+        df = tracker._load(path, cols)
+        if len(df):
+            ts += df[df.status.astype(str).str.lower() == "open"].ticker.astype(str).tolist()
+    return sorted(set(ts))
+
+
 def run(demo: bool = False) -> dict:
     if demo:
         from scanner.demo import demo_universe, demo_prices, demo_option
@@ -58,7 +75,9 @@ def run(demo: bool = False) -> dict:
         from scanner.data import refresh_universe, download_prices
         from scanner.options import fetch_25_delta as fetch_option
         universe = refresh_universe()
-        prices = download_prices(universe.ticker.tolist())
+        tickers = universe.ticker.tolist()
+        tickers += [t for t in tracked_tickers() if t not in set(tickers)]   # positions/paper trades outside the index lists
+        prices = download_prices(tickers)
     print(f"[scan] prices for {len(prices)} of {len(universe)} tickers")
 
     meta = universe.set_index("ticker")
@@ -75,6 +94,8 @@ def run(demo: bool = False) -> dict:
         raise SystemExit("no tickers analysed")
     scan_date = max(r["date"] for r in rows)
     rows = [r for r in rows if r["date"] == scan_date]   # drop stale/halted names
+    final = is_final(scan_date)
+    print(f"[scan] {scan_date} {'FINAL (after the close)' if final else 'INTRADAY (market still open)'}")
 
     # option pulls: today's flips first, then names closest to flipping, then the index ETFs
     def want(r):
@@ -107,22 +128,32 @@ def run(demo: bool = False) -> dict:
         IV_HISTORY.parent.mkdir(parents=True, exist_ok=True)
         hist.to_csv(IV_HISTORY, index=False)
 
-    green = sum(r["colour"] == "green" for r in rows)
+    from scanner import tracker
+    if demo:
+        track = dict(paper_stats={}, paper_trades=[], positions=[])
+    else:
+        from scanner.options import fetch_chain
+        track = tracker.update(rows, scan_date, final, fetch_chain)
+
+    index_rows = [r for r in rows if r["ticker"] in set(universe.ticker)]
+    green = sum(r["colour"] == "green" for r in index_rows)
     out = _clean(dict(
         scan_date=scan_date,
+        final=final,
+        **track,
         generated_utc=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         demo=demo,
         settings=dict(hma=hbb.HMA_LEN, bands=f"{hbb.BB_MULT} x stdev({hbb.BB_LEN})", ma=hbb.MA_LEN,
                       max_stretch_atr=hbb.MAX_STRETCH, near_days=NEAR_DAYS, option_target_days=30),
-        breadth=dict(total=len(rows), green=green, red=len(rows) - green,
-                     green_flips=sum(r["flipped_today"] and r["colour"] == "green" for r in rows),
-                     red_flips=sum(r["flipped_today"] and r["colour"] == "red" for r in rows)),
-        rows=sorted(rows, key=lambda r: r["ticker"]),
+        breadth=dict(total=len(index_rows), green=green, red=len(index_rows) - green,
+                     green_flips=sum(r["flipped_today"] and r["colour"] == "green" for r in index_rows),
+                     red_flips=sum(r["flipped_today"] and r["colour"] == "red" for r in index_rows)),
+        rows=sorted(index_rows, key=lambda r: r["ticker"]),
     ))
     (DOCS / "data" / "scans").mkdir(parents=True, exist_ok=True)
     payload = json.dumps(out, separators=(",", ":"))
     (DOCS / "data" / "latest.json").write_text(payload)
-    if not demo:
+    if not demo and final:
         (DOCS / "data" / "scans" / f"{scan_date}.json").write_text(payload)
     (DOCS / "index.html").write_text(render_dashboard(out), encoding="utf-8")
     print(f"[scan] {scan_date}: {out['breadth']} -> docs/index.html")

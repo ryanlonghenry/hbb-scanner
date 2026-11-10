@@ -12,6 +12,18 @@ Hull Bollinger Bands indicator (HMA 34, 2 × stdev 34) and publishes a dashboard
 Data is free: prices and option chains from Yahoo Finance (through the `yfinance` package), index members from Wikipedia.
 The indicator math matches the TradingView script bar-for-bar.
 
+## Paper test and your positions
+
+- **Paper test** (tab *Paper test*): every flip on an after-the-close scan buys 1 paper contract of its 25-delta
+  option at the mid. It is marked at the mid each evening and sold at the mid when the Hull line turns back
+  (or at intrinsic value at expiry). Results are split by the 50-day rule (Take / Stretched) and calls / puts.
+  Trades are stored in `data/paper_trades.csv`. Scans run while the market is open never open or close paper trades.
+- **My positions** (tab *My positions*): your real trades, listed in `data/positions.csv`, one line per trade:
+  `ticker,contract,kind,strike,expiry,qty,entry_date,entry_price,entry_underlying,status,exit_date,exit_price,notes`.
+  The contract is Yahoo's option symbol, e.g. `ORLY261218P00085000` (ORLY, 2026-12-18, Put, strike 85.000).
+  Each evening it shows the mark, P&L, and an **EXIT** flag when the line turns back against the trade.
+  To close one, set `status` to `closed` and fill `exit_date` and `exit_price`.
+
 ## Set up (about 10 minutes, once)
 
 1. **Create a repository.** On github.com click **New repository**, name it `hbb-scanner`, choose **Public**
@@ -30,7 +42,7 @@ The indicator math matches the TradingView script bar-for-bar.
    Branch: `main`, folder `/docs` → Save.** After a minute the page is live at
    `https://<your-github-name>.github.io/hbb-scanner/`.
 
-After that it runs on its own Monday–Friday at 22:20 UTC (4:20 pm Central in winter, 5:20 pm in summer).
+After that it runs on its own Monday–Friday at 22:20 UTC (4:20 pm Central in winter, 5:20 pm in summer), with a backup run at 23:50 UTC in case GitHub starts the first one late.
 Click **Run workflow** any time for an extra scan.
 
 ## Run it on your own computer instead (optional)

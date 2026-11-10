@@ -60,9 +60,12 @@ const pill = c => `<span class="pill ${c==='green'?'g':'r'}">${c==='green'?'Gree
 const rule = v => v==null ? '–' : `<span class="pill ${v==='take'?'g':'a'}">${v==='take'?'Take':'Stretched'}</span>`;
 const trig = r => { const past = r.next_colour==='green' ? r.flip_close_tomorrow < r.close : r.flip_close_tomorrow >= r.close;
   return past ? `<span class="pill a">already past</span> <span class="muted">${pct(r.flip_move_pct)}</span>` : `${pct(r.flip_move_pct)} <span class="muted">${sgn(r.flip_move_atr)} ATR</span>`; };
+const usd = v => v==null ? '–' : (v<0?'−$':'$')+Math.abs(v).toLocaleString('en-US',{maximumFractionDigits:0});
+const pnlc = v => v==null ? '–' : `<span style="color:var(${v>=0?'--green':'--red'});font-weight:600">${usd(v)}</span>`;
 const days = v => v==null ? `<span class="muted">&gt;30</span>` : v;
 
 $('#sub').textContent = `Daily close ${D.scan_date} · generated ${D.generated_utc}`;
+if (D.final===false) $('#demo').innerHTML = '<div class="demo">INTRADAY SCAN — run while the market was open. Flips use the live price and can change by the close. The paper test only updates on after-close scans.</div>';
 if (D.demo) $('#demo').innerHTML = '<div class="demo">SAMPLE DATA — generated offline to test the page. Not real prices or options.</div>';
 const B = D.breadth;
 $('#stats').innerHTML = [
@@ -123,6 +126,8 @@ const views = {
       {k:r=>r.close, h:'Close', f:r=>fmt(r.close)},
       {k:r=>r.hma, h:'Hull line', f:r=>fmt(r.hma)},
     ]},
+  mine: {label: ()=>`My positions (${(D.positions||[]).filter(p=>String(p.status).toLowerCase()==='open').length})`, custom: ()=>positionsView()},
+  paper: {label: ()=>{const s=(D.paper_stats||{}).All||{}; return `Paper test (${s.open||0} open / ${s.closed||0} closed)`;}, custom: ()=>paperView()},
   help: {label: ()=>'How to read this'},
 };
 let cur = 'flips', sortKey = null, sortDir = 1;
@@ -132,6 +137,7 @@ function draw(){
   tabs(); const v = views[cur];
   $('.tools').style.display = cur==='help' ? 'none' : 'flex';
   if (cur==='help'){ $('#view').innerHTML = HELP; return; }
+  if (v.custom){ $('.tools').style.display='none'; $('#view').innerHTML = v.custom(); bindSort(); return; }
   const q = $('#q').value.trim().toLowerCase(); const takeOnly = $('#takeOnly').checked;
   let rows = v.rows().filter(r=>!q || r.ticker.toLowerCase().includes(q) || (r.name||'').toLowerCase().includes(q));
   if (takeOnly) rows = rows.filter(v.take);
@@ -143,6 +149,53 @@ function draw(){
   const body = rows.map(r=>'<tr>'+v.cols.map(c=>`<td class="${c.c||''}">${c.f(r)}</td>`).join('')+'</tr>').join('');
   $('#view').innerHTML = `<div class="wrap"><table><thead>${grp}${head}</thead><tbody>${body}</tbody></table></div>`;
   document.querySelectorAll('th[data-i]').forEach(th=>th.onclick=()=>{const i=+th.dataset.i; sortDir = sortKey===i ? -sortDir : 1; sortKey=i; draw();});
+}
+function simpleTable(cols, rows){
+  if (!rows.length) return '<div class="wrap"><div class="empty">Nothing here yet.</div></div>';
+  return `<div class="wrap"><table><thead><tr>${cols.map(c=>`<th class="${c.c||''}" ${c.t?`title="${c.t}"`:''}>${c.h}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>'<tr>'+cols.map(c=>`<td class="${c.c||''}">${c.f(r)}</td>`).join('')+'</tr>').join('')}</tbody></table></div>`;
+}
+function bindSort(){}
+function positionsView(){
+  const P = D.positions||[];
+  const open = P.filter(p=>String(p.status).toLowerCase()==='open'), done = P.filter(p=>String(p.status).toLowerCase()!=='open');
+  const cols = [
+    {h:'Ticker', c:'l', f:p=>`<span class="tk">${p.ticker}</span>`},
+    {h:'Contract', c:'l', f:p=>`${String(p.expiry).slice(5)} ${p.strike} ${p.kind==='call'?'C':'P'} <span class="muted">×${p.qty}</span>`},
+    {h:'Signal', c:'l', t:'EXIT = the Hull line has turned back against the trade (the study\'s exit rule)', f:p=>p.exit_signal?'<span class="pill r">EXIT</span>':(p.colour?`${pill(p.colour)} hold`:'–')},
+    {h:'Exit trigger', t:'Close that turns the line back against the trade on the next bar', f:p=>p.trigger==null?'–':`${p.kind==='put'?'Green if &gt;':'Red if ≤'} ${fmt(p.trigger)}`},
+    {h:'Days if flat', t:'Trading days until the line turns back if the stock closes unchanged', f:p=>days(p.days_to_flip_flat)},
+    {h:'Stock entry → now', f:p=>`${fmt(p.entry_underlying)} → ${fmt(p.underlying)}`},
+    {h:'Breakeven', t:'Stock price at expiry where the option is worth what you paid', f:p=>fmt(p.breakeven)},
+    {h:'Paid', f:p=>fmt(p.entry_price)},
+    {h:'Bid / Ask', f:p=>p.bid==null?'–':`${fmt(p.bid)} / ${fmt(p.ask)}`},
+    {h:'Mark', t:'Mid of bid/ask (last trade if no quote)', f:p=>`${fmt(p.mid)} <span class="muted">${p.mark_source&&p.mark_source!=='mid'?p.mark_source:''}</span>`},
+    {h:'P&L', f:p=>pnlc(p.pnl)}, {h:'P&L %', f:p=>p.pnl_pct==null?'–':pct(p.pnl_pct,0)},
+    {h:'Days to expiry', f:p=>p.dte},
+  ];
+  const doneCols = [{h:'Ticker', c:'l', f:p=>`<span class="tk">${p.ticker}</span>`},{h:'Contract', c:'l', f:p=>`${String(p.expiry).slice(5)} ${p.strike} ${p.kind==='call'?'C':'P'} ×${p.qty}`},
+    {h:'Entry', f:p=>`${p.entry_date} @ ${fmt(p.entry_price)}`},{h:'Exit', f:p=>`${p.exit_date||''} @ ${fmt(p.exit_price)}`},{h:'P&L', f:p=>pnlc(p.pnl)},{h:'P&L %', f:p=>p.pnl_pct==null?'–':pct(p.pnl_pct,0)}];
+  return `<h3 style="margin:4px 0 10px">Open</h3>${simpleTable(cols, open)}<h3 style="margin:22px 0 10px">Closed</h3>${simpleTable(doneCols, done)}
+   <p class="muted" style="margin-top:14px">Positions live in <code>data/positions.csv</code> in the repo: one line per trade. To close one, set <code>status</code> to closed and fill <code>exit_date</code> and <code>exit_price</code>.</p>`;
+}
+function paperView(){
+  const S = D.paper_stats||{}, T = D.paper_trades||[];
+  const card = (k)=>{const s=S[k]||{}; if(!s.n) return `<div class="stat"><b>–</b><span>${k}: no trades yet</span></div>`;
+    return `<div class="stat"><b>${pnlc(s.pnl)}</b><span>${k}: ${s.n} trades · ${s.closed} closed${s.win_closed!=null?` · ${fmt(s.win_closed,0)}% won`:''} · ${s.big} at 3×+ · $${fmt(s.cost,0)} paid</span></div>`;};
+  const cols = [
+    {h:'Ticker', c:'l', f:t=>`<span class="tk">${t.ticker}</span>`},
+    {h:'Signal', c:'l', f:t=>`${t.signal_date} ${pill(t.kind==='call'?'green':'red')}`},
+    {h:'50-day rule', c:'l', f:t=>rule(t.filter)},
+    {h:'Contract', c:'l', f:t=>`${String(t.expiry).slice(5)} ${t.strike} ${t.kind==='call'?'C':'P'}`},
+    {h:'Stock entry → last', f:t=>`${fmt(t.entry_underlying)} → ${fmt(t.last_underlying)}`},
+    {h:'Entry mid', f:t=>fmt(t.entry_mid)}, {h:'Now / exit', f:t=>fmt(t.value)},
+    {h:'P&L', f:t=>pnlc(t.pnl)}, {h:'P&L %', f:t=>t.pnl_pct==null?'–':pct(t.pnl_pct,0)},
+    {h:'Skew at entry', f:t=>sgn(t.skew)}, {h:'Status', c:'l', f:t=>t.status==='open'?'open':`closed ${t.exit_date||''} <span class="muted">${t.exit_reason||''}</span>`},
+  ];
+  const open = T.filter(t=>t.status==='open').sort((a,b)=>(b.signal_date>a.signal_date?1:-1));
+  const closed = T.filter(t=>t.status!=='open').sort((a,b)=>(b.exit_date>a.exit_date?1:-1));
+  return `<div class="stats" style="padding:0 0 14px">${['All','Take','Stretched','Calls','Puts'].map(card).join('')}</div>
+   <p class="muted" style="margin:0 0 14px">Every flip on an after-close scan buys 1 paper contract of the 25-delta option at the mid, marks it at the mid each evening, and sells at the mid when the line turns back (or at expiry). No slippage or commissions.</p>
+   <h3 style="margin:4px 0 10px">Open</h3>${simpleTable(cols, open)}<h3 style="margin:22px 0 10px">Closed</h3>${simpleTable(cols, closed)}`;
 }
 const HELP = `<div class="help">
 <h3>What a flip is</h3><p>The middle line is a 34-day Hull moving average. It is green when it is higher than yesterday and red when it is not. A flip is the first close where that changes. Signals use the closed daily bar; a trade would be entered at the next open.</p>
